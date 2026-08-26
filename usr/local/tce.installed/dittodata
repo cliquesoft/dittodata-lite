@@ -1,0 +1,10 @@
+#!/bin/sh
+
+# Add the dittodata config directory to the files-to-backup list (if it's not already present)
+( cat /opt/.filetool.lst | grep -q 'usr/local/etc/dittodata' ) || echo 'usr/local/etc/dittodata' >>/opt/.filetool.lst
+
+# Make the config directory (if it doesn't already exist)
+[ ! -e /usr/local/etc/dittodata ] && mkdir -p '/usr/local/etc/dittodata'
+
+# Symlink the correct default config
+[ ! -e /usr/local/etc/dittodata/global.cfg ] && [ -e /usr/local/etc/dittodata/_lsb.cfg ] && ln -s '/usr/local/etc/dittodata/_lsb.cfg' '/usr/local/etc/dittodata/global.cfg'
