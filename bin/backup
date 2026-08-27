@@ -1,7 +1,7 @@
 #!/bin/sh
 # backup	This script is a lite version of our dittodata backup solution
 # Created	2011-12-07 by Dave Henderson (dhenderson@cliquesoft.org)
-# Updated	2026-08-26 by Dave Henderson (dhenderson@cliquesoft.org)
+# Updated	2026-08-27 by Dave Henderson (dhenderson@cliquesoft.org)
 #
 # Unless a valid Cliquesoft Private License (CPLv1) has been purchased for your
 # device, this software is licensed under the Cliquesoft Public License (CPLv2)
@@ -73,6 +73,7 @@ LOG_FIFO="${RJN}.fifo"						# the fifo used to create the archive catalog file w
 # [system]
 DATETIME="$(date +'%Y-%m-%d %H:%M:%S')"				# sets a default epoch so in the event of failure, a full backup should be performed via this date for safety
 EXT=								# the archive extension
+FIND=								# the find command to feed the files into tar
 SIZE=								# the archive size
 TEMP=
 
@@ -146,6 +147,56 @@ exitGraceful() {
 #	[ $SUCCESS -gt 0 ] && echo "[failed]" >>"${DIR_LOGS}/${LOG_ERRS}"
 	exit $SUCCESS						# exit with the passed error number (for debugging)
 }
+
+
+# Usage syntax: sizeConvert sSize sUnit
+# converts the passed size into the passed unit			1 Byte = 8 Bits
+# sSize		the size to convert and must include a suffix: B(ytes), K(ilobyte 1000), Ki(bibyte 1024), M(egabyte), Mi(bibyte), 
+# sUnit		the unit to convert the passed size to: B, b, KB, Ki, kb, MB, MiB, mb, etc
+# NOTES:
+#	kibibytes = 1024 (decimal) memory (--from=si) KiB
+#	kilobytes = 1000 (binary) storage (--from-iec) KB
+#	bits are indicated via lower case (e.g. kb); numfmt does NOT do conversion between bytes and bits
+#	http://www.pixelbeat.org/docs/numfmt.html
+#	https://www.man7.org/linux/man-pages/man1/numfmt.1.html
+#	https://physics.nist.gov/cuu/Units/binary.html
+#	https://stackoverflow.com/questions/19059944/convert-kb-to-mb-using-bash
+#	https://hexus.net/tech/tech-explained/storage/1376-gigabytes-gibibytes-what-need-know/
+#	https://unix.stackexchange.com/questions/346902/need-to-convert-bytes-to-gb-mb-kb-in-normal-decimal-format
+sizeConvert() {
+	local sSIZE=$1
+	local sUNIT=$2
+	local iPRE=''						# number portion of string
+	local sSUF=''						# unit portion of string
+
+	# validate sSIZE suffix
+	iPRE=$(echo ${sSIZE}|sed 's/[a-zA-Z]*//g')		# number
+	sSUF=$(echo ${sSIZE}|sed 's/[0-9]*//g')			# unit
+	case $sSUF in
+		'B') sSIZE=$iPRE ;;				# if we are dealing in bytes, we have to remove the 'B' suffix or numfmt will error
+		'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sSIZE], exiting." | tee -a "${DIRLOGS}/${JOBLOG}" -a "${DIRLOGS}/${ERRLOG}"
+		   exitGraceful 1				# NOTE: this also picks up no value for sSUF
+			;;
+	esac
+
+	# validate sUNIT
+	case $sUNIT in
+		'B'|'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sUNIT], exiting." | tee -a "${DIRLOGS}/${JOBLOG}" -a "${DIRLOGS}/${ERRLOG}"
+		   exitGraceful 1
+			;;
+	esac
+
+	numfmt --round=towards-zero --from=auto --to-unit=1${sUNIT} --grouping ${sSIZE}		# 'towards-zero' is basically truncation instead of rounding	https://askubuntu.com/questions/1169138/cutting-numbers-into-a-specific-decimals
+	return 0
+}
+
+
+
+
+
+
 
 
 
@@ -424,7 +475,9 @@ else
 	echo -n " [tar]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 	# if no custom parameters were passed, then set defaults
-	[ ! "${PARAMETERS}" ] && PARAMETERS='-P --one-file-system --ignore-failed-read --ignore-case'
+	[ ! "${PARAMETERS}" ] && PARAMETERS="-P --one-file-system --ignore-failed-read --ignore-case -T \"${DIR_TEMP}/${RJN}.list\""
+# REMOVED 2026-08-27 - we aren't doing this any longer
+#	PARAMETERS="--null -T - ${PARAMETERS}"			# indicate we need to read in a files list with null terminators instead of newlines (\n) and that we will read this list from stdin
 
 	[ "${TYPE}" = 'daily' ] && EXT='.d.t'
 	[ "${TYPE}" = 'full' ] && EXT='.f.t'
@@ -541,6 +594,12 @@ fi
 
 
 
+# Grab the Ctrl-C signal and cleanup the environment
+trap "exitGraceful 1" SIGINT
+
+
+
+
 # process the locations
 echo -n "Processing the locations:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
@@ -649,6 +708,7 @@ else
 	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 	echo -n "Obtaining size of the archive data set:" >>"${DIR_LOGS}/${LOG_ERRS}"
+# LEFT OFF - if no --include or --exclude was passed, can we just do a 'df'
 	# NOTE: this is processed so that both --include and --exclude can be used simulatenously
 	TEMP='|'						# create the initial value in the layout: dirs|patterns (e.g. 'Common Profiles|-name *.pdf -o -name *.mdb')
 	for FILE in "$INCLUDE" "$EXCLUDE"; do
@@ -675,74 +735,51 @@ else
 	TEMP="$(echo "${TEMP}"|sed 's/ |/|/;s/| -o /| \\( /;s/| -a /| \\( /')"			# remove spacing around the '|' character and preceeding ' -o ' -or- ' -a '; For example: 'Common/ Profiles/ | -o -name=*.pdf -o name=*.db' > 'Common/ Profiles/|\( -name=*.pdf -o name=*.db'  -OR-  'Common/ Profiles/ | -a ! -name=*.pdf -a ! name=*.db' > 'Common/ Profiles/|\( ! -name=*.pdf -a ! name=*.db'
 	[ "${TEMP:0:1}" = '|' ] && TEMP=".${TEMP}"		# if no directories were in the list, then add '.' at the beginning
 	( ! echo "$TEMP" | grep -q '|'$ ) && TEMP="${TEMP} \\)"	# if there were included wildcards, then add the trailing '\)' to the 'find' syntax
-# LEFT OFF - finish this section
-	PARAMETERS="--null -T - ${PARAMETERS}"			# indicate we need to read in a files list with null terminators instead of newlines (\n) and that we will read this list from stdin
-# LEFT OFF - output the list from 'find' here in a temp list to use further down with 'tar' so we don't have to execute 'find' twice (once here, once down there)
+
 	# NOTE: we incorporate 'find' in the command since 'tar' won't look in sub directories when using wildcards; this is a work-around
 	#	we use OFMT to prevent scientific notation from being used	https://stackoverflow.com/questions/12714155/how-can-i-make-awk-not-use-scientific-notation-when-printing-small-values
 	#	the below MUST come in the order presented!
-	if [ "$SIZE" ]; then
-echo top | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-echo "find ${TEMP%|*}${TEMP#*|} -newermt '$SIZE' -type f -print"
-# LEFT OFF - rename EXE_PREFIX
-		TARPREFIX="cd \"${DIR_MNTS}/${RJN}.s/\" && find ${TEMP%|*}${TEMP#*|} -newermt '$SIZE' -type f -print0 2>>\""${DIR_LOGS}/${LOG_ERRS}"\" | "
-		SIZE="$(cd "${DIR_MNTS}/${RJN}.s/" && eval "find ${TEMP%|*}${TEMP#*|} -newermt '$SIZE' -type f -printf \"%s\\n\" 2>>\""${DIR_LOGS}/${LOG_ERRS}"\"" | awk '{ total+=$1 } END { OFMT="%.0f"; print total }')"	# NOTE: the '%s' is in bytes (or bits?), but can be substituted with '%k' for kilobytes
-# MAYBE	- [ "$SIZE" == '' ] && TARPREFIX="cd \"${DIR_MNTS}/${RJN}.s/\" && find ${TEMP%|*} -type f ${TEMP#*|} -print0 | xargs -0"	# this may be required if special characters are in the filename, but may prevent catalog files from being written
+	if [ "${TYPE}" = 'full' ]; then
+		cd "${DIR_MNTS}/${RJN}.s/" && eval find ${TEMP%|*}${TEMP#*|} -type f -printf \'%s\\t%p\\n\' 2\>\>\"${DIR_LOGS}/${LOG_ERRS}\" | eval awk \'{print \$2 \>\>\"${DIR_TEMP}/${RJN}.list\"}\; {total += \$1} END {OFMT=\"%.0f\"\; print total \>\>\"${DIR_TEMP}/${RJN}.size\"}\'
 	else
-echo btm | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-echo "find ${TEMP%|*}${TEMP#*|} -type f -print"
-		TARPREFIX="cd \"${DIR_MNTS}/${RJN}.s/\" && find ${TEMP%|*}${TEMP#*|} -type f -print0 2>>\""${DIR_LOGS}/${LOG_ERRS}"\" | "
-		SIZE="$(cd "${DIR_MNTS}/${RJN}.s/" && eval "find ${TEMP%|*}${TEMP#*|} -type f -printf \"%s\\n\" 2>>\""${DIR_LOGS}/${LOG_ERRS}"\"" | awk '{ total+=$1 } END { OFMT="%.0f"; print total }')"	# NOTE: the '%s' is in bytes (or bits?), but can be substituted with '%k' for kilobytes
+		# NOTE: we are using SIZE here since TEMP will be filled with 'find' syntax
+		[ "${TYPE}" = 'daily' ] && SIZE="$(date +'%Y-%m-%d') 00:00:00"
+		[ "${TYPE}" = 'incremental' ] && {
+			SIZE=$(ls -t1 "${DIR_MNTS}/${RJN}.t/${NAME}" | grep "${EXT//./\\.}..$" | head -1)			# stores the last created file in the directory to use as the epoch for the files to now be backed up
+			[ "$SIZE" ] && SIZE=$(stat -c '%x' "${DIR_MNTS}/${RJN}.t/${NAME}/${SIZE}" | sed 's/\..*//')		# if we have at least 1 prior backup, then store the *access* date of that file
+			[ ! "$SIZE" ] && SIZE="$(date +'%Y-%m-%d') 00:00:00"							# if no date was obtained above (e.g. no backups exist yet), then use today as the date
+		}
+# LEFT OFF - test '-newerBt' (for birth/creation time)
+		# the 'find' command creates a files list of what to backup and the total size of those files			  WARNING: if nothing is found to backup, then the RJN.size file will be blank and RJN.list will not exist!
+		# NOTE: we use the 'access' time stamp here as it stores the epoch when the file was created (last accessed in this case)
+		cd "${DIR_MNTS}/${RJN}.s/" && eval find ${TEMP%|*}${TEMP#*|} -newerat \"$SIZE\" -type f -printf \'%s\\t%p\\n\' 2\>\>\"${DIR_LOGS}/${LOG_ERRS}\" | eval awk \'{print \$2 \>\>\"${DIR_TEMP}/${RJN}.list\"}\; {total += \$1} END {OFMT=\"%.0f\"\; print total \>\>\"${DIR_TEMP}/${RJN}.size\"}\'
 	fi
+	SIZE=$(cat "${DIR_TEMP}/${RJN}.size")
 	[ "$SIZE" ] && SIZE=$(sizeConvert "${SIZE}B" 'M')	# convert the size into MB
 
 	# Validate the SIZE obtained above
 	if [ "$SIZE" == '0' ] || [ "$SIZE" == '' ]; then	# NOTE: the SIZE=='' would occur is no files were returned from 'find' (e.g. no new data was available yet)
-		echo "There does NOT appear to be any data that needs to be backed up, exiting." | tee -a "${DIRLOGS}/${JOBLOG}" >${VERBOSE}
+		echo "There does NOT appear to be any data that needs to be backed up." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 0
 	fi
 	if ( ! echo ${SIZE} | grep -q ^'[0-9]*'$ ); then
-		echo "ERROR: The size of the backup failed to be obtained, exiting." | tee -a "${DIRLOGS}/${JOBLOG}" -a ""${DIR_LOGS}/${LOG_ERRS}""
+		echo "ERROR: The size of the backup failed to be obtained." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 1
 	fi
 
-
-
-
-
-
-
-	echo -n "Backing up the data:" >>"${DIR_LOGS}/${LOG_ERRS}"
-	case "${TYPE}" in								# figure out backup dates for daily/incremental backups
-	    "daily")
-		echo " [daily] [$(date +'%Y-%m-%d')] ..." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-# LEFT OFF - these pieces of code need to go in the section above and not part of tar parameters list!
-#		PARAMETERS="--newer-mtime \"$(date +'%Y-%m-%d') 00:00:00\" $PARAMETERS"
-		;;
-	    "full")
-		echo " [full] ..." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		;;
-	    "incremental")
-#		TEMP=$(ls -t1 "${DIR_MNTS}/${RJN}.t/${NAME}"|grep "${EXT//./\\.}..$"|head -1)							# stores the last created file in the directory to use as the epoch for the files to now be backed up
-#		[ "$TEMP" != '' ] && TEMP=$(date -r "${DIR_MNTS}/${RJN}.t/${NAME}/${TEMP}" +"%Y-%m-%d %H:%M:%S")				# if we have at least 1 prior backup, then store the date of that file
-#		[ "$TEMP" = '' ] && TEMP="$(date +'%Y-%m-%d') 00:00:00"			# if no date was obtained above (e.g. no backups exist yet), then use the start of today as the date
-#		PARAMETERS="--newer-mtime '${TEMP}' $PARAMETERS"			# https://www.gnu.org/software/tar/manual/html_section/after.html
-		echo " [incremental] [${TEMP}] ..." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		;;
-	esac
-
+	echo "Backing up the data..." >>"${DIR_LOGS}/${LOG_ERRS}"
 	[ ! -e "${DIR_LOGS}/${LOG_ERRS}" ] && touch "${DIR_LOGS}/${LOG_ERRS}"		# if the log file has not yet been created, create it now so there aren't any errors below
 	TEMP=$(stat -c '%s' "${DIR_LOGS}/${LOG_ERRS}")					# NOTE: we store the size of the error file before tar is executed so we know if an error occurs with it during execution (since we can't exitGraceful() upon tar failure, but only the last chained pipe command)
 
 	# NOTE: the below single command creates the backup archive, the catalog file, and compresses all at once!
-	( eval "${TARPREFIX}tar -cvf - --totals ${PARAMETERS}" 2>"${DIR_TEMP}/${LOG_FIFO}" || {
+	( eval "cd "${DIR_MNTS}/${RJN}.s/" && tar -cvf - --totals ${PARAMETERS}" 2>"${DIR_TEMP}/${LOG_FIFO}" || {
 		echo "ERROR: The 'tar' binary failed in its execution, exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}" 1>&2
-		echo "Calling: ${TARPREFIX}tar -cvf - --totals ${PARAMETERS} | pv -W -w 80 -s ${SIZE}m ${COMPRESSION}>\"${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+		echo "Calling: tar -cvf - --totals ${PARAMETERS} | pv -W -w 80 -s ${SIZE}m ${COMPRESSION}>\"${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 	} ) | eval "pv -W -w 80 -s ${SIZE}m ${COMPRESSION}>\"${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}\""
 
 	# process any tar encountered errors above and restore verbose output if continuing
 	[ $TEMP -lt $(stat -c '%s' "${DIR_LOGS}/${LOG_ERRS}") ] && {
-		echo "ERROR: The 'tar' binary has completed but encountered an error, exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo "ERROR: The 'tar' binary has completed but encountered an error." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 1
 	}
 fi
@@ -757,45 +794,6 @@ fi
 
 
 
-echo "Backing up the data..." >>"${DIR_LOGS}/${LOG_ERRS}"
-case "${TYPE}" in
-   "daily")
-	EXT='.d.tar'
-	cd "${RJN}"
-#	eval tar -cvP${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --newer-mtime \"$(date +"%Y-%m-%d") 00:00:00\" --files-from "$INCLUDE" -f "${TARGET}/${NAME}/${RJN}${EXT}" >>"${DIR_LOGS}/${LOG_ERRS}" || exitGraceful
-# NOTE: have to use 'cat' below instead of '--files-from' since tar can't handle wildcards correctly
-
-#	eval tar -cvP${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --newer-mtime \"$(date +"%Y-%m-%d") 00:00:00\" -f "${TARGET}/${NAME}/${RJN}${EXT}" "$(cat $INCLUDE)" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1 || exitGraceful
-	eval tar -cvP${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --newer-mtime \"$(date +"%Y-%m-%d") 00:00:00\" -f "${TARGET}/${NAME}/${RJN}${EXT}" "$(cat $INCLUDE)" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
-	;;
-   "full")
-	EXT='.f.tar'
-	cd "${RJN}"
-#	eval tar -cvP${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --files-from "$INCLUDE" -f "${TARGET}/${NAME}/${RJN}${EXT}" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1 || exitGraceful
-	eval tar -cvP${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --files-from "$INCLUDE" -f "${TARGET}/${NAME}/${RJN}${EXT}" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
-	;;
-   "incremental")
-	EXT='.i.tar'						# define the file extension to use for this type of backup
-	cd "${NAME}"
-	for i in $(ls -t1|grep "${EXT:0:4}..$"); do		# used to obtain the epoch of the last backup data file created (for use below)
-		if [ "${i}" == "lost+found" ]; then continue; fi	# if we encounter the "lost+found" dir, skip it (this is just a precaution, but should n$
-		if [ -d "${i}" ]; then continue; fi			# skip all directories
-
-		LAST=$(date -r "$i" +"%Y%m%d%H%M%S")			# store the date of the iterated backup data file
-		PAST=$(date -d "14 minutes ago" +"%Y%m%d%H%M%S")	# this is used so that the backup data files created by mutliple jobs running at (or aro$
-		if (( $PAST < $LAST )); then				# if the iterated file was create within 14 minutes of the file we are currently creatin$
-			echo "Due to the \"${i}\" file having a last-modified epoch of \"${LAST}\", which is too close to the current epoch and and could be another running backup job, this file was not chosen as the source of the 'last modified date.'" >>"${DIR_LOGS}/${LOG_ERRS}"
-			continue
-		else							# otherwise, the previous backup was done earlier so use that as the epoch to backup from
-			DATETIME=$(date -r "$i" +"%Y-%m-%d %H:%M:%S")	# store the correct epoch for use below
-			break						# since we want the first correct file in the listing, we can exit out of the 'for' loop$
-		fi
-	done
-	cd "../${RJN}"						# cd into the target directory so the relative paths in the "include files" file make sense
-#	eval tar -cvPW${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --newer-mtime \"${DATETIME}\" --files-from "$INCLUDE" -f "${TARGET}/${NAME}/${RJN}${EXT}" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1 || exitGraceful
-	eval tar -cvPW${PARAMS} --one-file-system --totals --ignore-failed-read --ignore-case --newer-mtime \"${DATETIME}\" --files-from "$INCLUDE" -f "${TARGET}/${NAME}/${RJN}${EXT}" 1>>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
-	;;
-esac
 
 # let the system settle down before continuing...
 sleep 5
@@ -842,4 +840,11 @@ echo -n "The backup job has completed successfully: " >>"${DIR_LOGS}/${LOG_ERRS}
 date >>"${DIR_LOGS}/${LOG_ERRS}"
 
 exitGraceful 0
+
+
+# TO DO
+# - move the online emailer php script to dittodata domain (erase the one for ip.digital-pipe.com)
+# - get the dittodata website online and charge for yearly emailing ($10/yr)
+# - allow people to upload their backups to our service for a fee
+
 
