@@ -1,0 +1,25 @@
+2026/08/26
+- Added '--help'
+- Added '--version'
+- Added expanded parameters list from:
+   user, pass, dom, name, type, source, target, compression, include
+- Added directory checks
+- Added variable checks
+- Added variable alterations
+- Added processing locations
+- Started the processing of data
+
+2026/08/27
+- Added elevated prividge checking
+- Added signal traps
+- Added config file processing
+- Added sizeConvert()
+- Updated exitGraceful() to process --source and --target
+- Finished the processing of data
+
+2026/08/28
+- Updated rsync default parameters
+- Updated the --help output
+- Updated the error output to reduce the amount calls
+- Added the backup cycling
+

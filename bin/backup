@@ -73,7 +73,9 @@ LOG_FIFO="${RJN}.fifo"						# the fifo used to create the archive catalog file w
 # [system]
 DATETIME="$(date +'%Y-%m-%d %H:%M:%S')"				# sets a default epoch so in the event of failure, a full backup should be performed via this date for safety
 EXT=								# the archive extension
+FILE=
 FIND=								# the find command to feed the files into tar
+LINE=
 SIZE=								# the archive size
 TEMP=
 
@@ -149,20 +151,21 @@ exitGraceful() {
 }
 
 
-# Usage syntax: sizeConvert sSize sUnit
-# converts the passed size into the passed unit			1 Byte = 8 Bits
-# sSize		the size to convert and must include a suffix: B(ytes), K(ilobyte 1000), Ki(bibyte 1024), M(egabyte), Mi(bibyte), 
-# sUnit		the unit to convert the passed size to: B, b, KB, Ki, kb, MB, MiB, mb, etc
-# NOTES:
-#	kibibytes = 1024 (decimal) memory (--from=si) KiB
-#	kilobytes = 1000 (binary) storage (--from-iec) KB
-#	bits are indicated via lower case (e.g. kb); numfmt does NOT do conversion between bytes and bits
-#	http://www.pixelbeat.org/docs/numfmt.html
-#	https://www.man7.org/linux/man-pages/man1/numfmt.1.html
-#	https://physics.nist.gov/cuu/Units/binary.html
-#	https://stackoverflow.com/questions/19059944/convert-kb-to-mb-using-bash
-#	https://hexus.net/tech/tech-explained/storage/1376-gigabytes-gibibytes-what-need-know/
-#	https://unix.stackexchange.com/questions/346902/need-to-convert-bytes-to-gb-mb-kb-in-normal-decimal-format
+# Usage syntax: sizeConvert SIZE UNIT
+# Overview:	converts the passed size into the passed unit; 1 Byte = 8 Bits
+# Parameters:
+#		SIZE		[string] the size to convert and must include a suffix: B(ytes), K(ilobyte 1000), Ki(bibyte 1024), M(egabyte), Mi(bibyte), 
+#		UNIT		[string] the unit to convert the passed size to: B, b, KB, Ki, kb, MB, MiB, mb, etc
+# Notes:
+#		- kibibytes = 1024 (decimal) memory (--from=si) KiB
+#		- kilobytes = 1000 (binary) storage (--from-iec) KB
+#		- bits are indicated via lower case (e.g. kb); numfmt does NOT do conversion between bytes and bits
+#		  http://www.pixelbeat.org/docs/numfmt.html
+#		  https://www.man7.org/linux/man-pages/man1/numfmt.1.html
+#		  https://physics.nist.gov/cuu/Units/binary.html
+#		  https://stackoverflow.com/questions/19059944/convert-kb-to-mb-using-bash
+#		  https://hexus.net/tech/tech-explained/storage/1376-gigabytes-gibibytes-what-need-know/
+#		  https://unix.stackexchange.com/questions/346902/need-to-convert-bytes-to-gb-mb-kb-in-normal-decimal-format
 sizeConvert() {
 	local sSIZE=$1
 	local sUNIT=$2
@@ -175,7 +178,7 @@ sizeConvert() {
 	case $sSUF in
 		'B') sSIZE=$iPRE ;;				# if we are dealing in bytes, we have to remove the 'B' suffix or numfmt will error
 		'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
-		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sSIZE], exiting." | tee -a "${DIRLOGS}/${JOBLOG}" -a "${DIRLOGS}/${ERRLOG}"
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sSIZE], exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		   exitGraceful 1				# NOTE: this also picks up no value for sSUF
 			;;
 	esac
@@ -183,12 +186,68 @@ sizeConvert() {
 	# validate sUNIT
 	case $sUNIT in
 		'B'|'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
-		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sUNIT], exiting." | tee -a "${DIRLOGS}/${JOBLOG}" -a "${DIRLOGS}/${ERRLOG}"
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sUNIT], exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		   exitGraceful 1
 			;;
 	esac
 
 	numfmt --round=towards-zero --from=auto --to-unit=1${sUNIT} --grouping ${sSIZE}		# 'towards-zero' is basically truncation instead of rounding	https://askubuntu.com/questions/1169138/cutting-numbers-into-a-specific-decimals
+	return 0
+}
+
+
+# Usage syntax: cycleArchives
+# Overview:	cycles the backup archives
+cycleArchives() {
+	echo -n "Cycling the backups:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+	cd "${DIRMNTS}/${RJN}.t/${NAME}" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+		echo -e " [failure]\nERROR: The job --target directory is not accessible." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo "Calling: cd \"${DIRMNTS}/${RJN}.t/${NAME}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+		return 1
+	}
+	# NOTE: we check the EXT as we do below in case the compression changes at some point
+	TEMP=$(ls -rt1 2>>"${DIR_LOGS}/${LOG_ERRS}" | grep "${EXT:0:4}.."$)			# store all the job-related files
+	if [ $? -ne 0 ]; then									# if the prior command failed (either 'ls' or 'ssh'), then...
+		echo -e " [failure]\nERROR: The job archives can NOT be obtained to be cycled." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo "Calling: ls -rt1 | grep \"${EXT:0:4}..\"$" >>"${DIR_LOGS}/${LOG_ERRS}"
+		echo -e "Value:\n${TEMP}" >>"${DIR_LOGS}/${LOG_ERRS}"
+		return 1
+	fi
+	for FILE in $TEMP; do
+		[ "$FILE" = "lost+found" ] && continue						# this is ONLY a safety precaution and should never be reached
+		[ "$FILE" = "${RJN}${EXT}" ] && continue					# if we've iterated to the backup we just created (e.g. there is only one backup created so far), then continue
+
+		# perform a check to see if we are within the count each iteration
+		[ $(echo "$TEMP" | grep -c "${EXT:0:4}.."$) -le $LIMIT ] && break		# if the file count is less than the passed COUNT then the archive count is NOT MORE than should be, so we can exit
+		echo -n " [over]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"				# otherwise, we are OVER the count defined, so delete the oldest ones until we get back into compliance (in case this number changes at some point)
+
+		# delete the archive and associated catalog file
+		rm "${FILE}" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+			echo -e " [failure]\nERROR: The cycled job archive (${FILE}) can NOT be deleted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+			echo "Calling: rm \"${FILE}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+			return 1
+		}
+		if [ -e "${FILE%.*}.cat" ]; then
+			rm "${FILE%.*}.cat" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+				echo -e " [failure]\nERROR: The cycled job archive catalog (${FILE%.*}.cat) can NOT be deleted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+				echo "Calling: rm \"${FILE%.*}.cat\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+				return 1
+			}
+		fi
+
+		# remove the just-deleted archive from the TEMP listing (so the LIMIT comparison at the top works correctly)
+		TEMP=$(echo "$TEMP" | sed "/${FILE}/d")
+
+		# delete the associated logs (locally)
+		if [ -e "${DIRLOGS}/${FILE%%.*}.log" ]; then
+			rm "${DIRLOGS}/${FILE%%.*}.log" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+				echo -e " [failure]\nERROR: The cycled job archive log (${FILE%%.*}.log) can NOT be deleted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+				echo "Calling: rm \"${DIRLOGS}/${FILE%%.*}.log\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+				return 1
+			}
+		fi
+	done
+	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	return 0
 }
 
@@ -235,6 +294,8 @@ if [ ! "$1" ] || [ "$1" = '--help' ]; then
 	echo "  --limit	   the number to limit the backup archive count"
 	echo "  --name     the name of the backup job (enclose in quotes)"
 	echo "  --parameters  custom parameters to pass to the underlying binary (tar/rsync)"
+# DEV NOTE: the below cycles backups before the new backup archive is created; useful if you storage is limited; this does NOT run if nothing gets backed up
+	echo "  --precycle cycles the backups before the backup occurs"
 	echo "  --type     what type of backup job to perform:"
 	echo "		daily|full|incremental|sync"
 	echo
@@ -255,14 +316,14 @@ if [ ! "$1" ] || [ "$1" = '--help' ]; then
 	echo
 	echo "    {CREDENTIALS}"
 	echo
-	echo "  --SOURCE_USER   network share username"
-	echo "  --SOURCE_PASS   network share password"
-	echo "  --SOURCE_DOMN   network share domain (CIFS)"
-	echo "  --SOURCE_PARM   additional mount parameters to the pass"
-	echo "  --TARGET_USER"
-	echo "  --TARGET_PASS"
-	echo "  --TARGET_DOMN"
-	echo "  --TARGET_PARM"
+	echo "  --source_user   network share username"
+	echo "  --source_pass   network share password"
+	echo "  --source_domn   network share domain (CIFS)"
+	echo "  --source_parm   additional mount parameters to the pass"
+	echo "  --target_user"
+	echo "  --target_pass"
+	echo "  --target_domn"
+	echo "  --target_parm"
 	echo
 	echo "    {MISCELLANEOUS}"
 	echo
@@ -307,6 +368,8 @@ for i in "$@"; do						# process each of the passed parameters (after setting de
 		NAME="${i#*=}"
 	elif ( echo "${i}" | grep -q ^'--parameters=' ); then
 		PARAMETERS="${i#*=}"
+	elif ( echo "${i}" | grep -q ^'--precycle ' ); then
+		PRECYCLE='TRUE'
 	elif ( echo "${i}" | grep -q ^'--type=' ); then
 		TYPE="${i#*=}"
 
@@ -389,7 +452,7 @@ fi
 
 
 
-echo -e "\n\n---------- [ Script Execution ] ----------" >>"${DIR_LOGS}/${LOG_ERRS}"
+echo -e "\n\n----------- [ Backup Started ] -----------" >>"${DIR_LOGS}/${LOG_ERRS}"
 echo -e "           $(date +'%Y-%m-%d  %H:%M:%S')\n" >>"${DIR_LOGS}/${LOG_ERRS}"
 echo -e "${0##*/} $@" >>"${DIR_LOGS}/${LOG_ERRS}"
 
@@ -400,56 +463,28 @@ echo -e "${0##*/} $@" >>"${DIR_LOGS}/${LOG_ERRS}"
 echo -n "Checking for necessary variable values:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 echo -n " [name]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-[ ! "${NAME}" ] && {						# checks that the '--name' parameter was passed to this script since it's mandatory
-	echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	echo "ERROR: The backup job was called without the '--name' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	exit 1
-}
+[ ! "${NAME}" ] && { echo -e " [failure]\nERROR: The backup job was called without the '--name' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
 
 echo -n " [type]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-[ ! "${TYPE}" ] && {						# checks that the '--type' parameter was passed to this script since it's mandatory
-	echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	echo "ERROR: The backup job was called without the '--type' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	exit 1
-}
+[ ! "${TYPE}" ] && { echo -e " [failure]\nERROR: The backup job was called without the '--type' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
+
+echo -n " [limit]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ ! "${LIMIT}" ] && { echo -e " [failure]\nERROR: The backup job was called without the '--limit' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
+( echo "${LIMIT}" | grep -q ^'[0-9]*'$ ) && { echo -e " [failure]\nERROR: The backup job was called without a numeric '--limit' value." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
 
 echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-[ ! "${SOURCE}" ] && {						# checks that the '--source' parameter was passed to this script since it's mandatory
-	echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	echo "ERROR: The backup job was called without the '--source' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	exit 1
-}
+[ ! "${SOURCE}" ] && { echo -e " [failure]\nERROR: The backup job was called without the '--source' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
 if [ "${SOURCE:0:1}" = '%' ]; then
-	if ( ! echo "$SOURCE" | grep -q ':' ); then		# if the path wasn't included in the SOURCE parameter, then...	NOTE: we need to test for ':' since 'host:' would be the users home directory
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The backup job was called without a directory in the SOURCE parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		exit 1
-	fi
+	# if the path wasn't included in the SOURCE parameter, then...	NOTE: we need to test for ':' since 'host:' would be the users home directory
+	( ! echo "$SOURCE" | grep -q ':' ) && { echo -e " [failure]\nERROR: The backup job was called without a directory in the SOURCE parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
 fi
-# if we aren't dealing with an sshfs SOURCE -OR- we are using sshfs -and- the last character isn't a ':' (since 'host:' is valid), then...
-#if [ "${SOURCE:0:1}" != '%' ] || ( [ "${SOURCE:0:1}" = '%' ] && ( echo "${SOURCE}" | grep -q ':'$ ) ); then
-#	# check if the directory doesn't have a trailing '/', and if not append it to the path now so the directory structures below will be correct
-#	( echo "${SOURCE}" | grep -q '/'$ ) && SOURCE="${SOURCE}/"
-#fi
 
 echo -n " [target]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-[ ! "${TARGET}" ] && {						# checks that the '--target' parameter was passed to this script since it's mandatory
-	echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	echo "ERROR: The backup job was called without the '--target' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	exit 1
-}
-if [ "${TARGET:0:1}" == '%' ]; then
-	if ( ! echo "$TARGET" | grep -q ':' ); then		# if the path wasn't included in the TARGET parameter, then...	NOTE: we need to test for ':' since 'host:' would be the users home directory
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The backup job was called without a directory in the TARGET parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		exit 1
-	fi
+[ ! "${TARGET}" ] && { echo -e " [failure]\nERROR: The backup job was called without the '--target' parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
+if [ "${TARGET:0:1}" = '%' ]; then
+	# if the path wasn't included in the TARGET parameter, then...	NOTE: we need to test for ':' since 'host:' would be the users home directory
+	( ! echo "$TARGET" | grep -q ':' ) && { echo -e " [failure]\nERROR: The backup job was called without a directory in the TARGET parameter." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exit 1; }
 fi
-# if we aren't dealing with an sshfs TARGET -OR- we are using sshfs -and- the last character isn't a ':' (since 'host:' is valid), then...
-#if [ "${TARGET:0:1}" != '%' ] || ( [ "${TARGET:0:1}" = '%' ] && ( echo "${TARGET}" | grep -q ':'$ ) ); then
-#	# check if the directory doesn't have a trailing '/', and if not append it to the path now so the directory structures below will be correct
-#	( echo "${TARGET}" | grep -q '/'$ ) && TARGET="${TARGET}/"
-#fi
 echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 
@@ -462,7 +497,7 @@ if [ "${TYPE}" = 'sync' ]; then
 	echo -n " [rsync]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 	# if no custom parameters were passed, then set defaults
-	[ ! "${PARAMETERS}" ] && PARAMETERS='-rulHpEogDtzv --progress --partial-dir=InProgress --no-checksum --blocking-io --one-file-system'
+	[ ! "${PARAMETERS}" ] && PARAMETERS='-rlptgoDHEWzu --inplace --progress --partial-dir=InProgress --blocking-io --one-file-system'
 
 	# NOTE: these are separate 'if' statements so that both --include and --exclude can be used simulatenously
 	if [ "${EXCLUDE}" != '' ]; then
@@ -574,7 +609,7 @@ elif [ "${TARGET:0:1}" = '%' ]; then
 		TARGET_CALL="echo '${TARGET_PASS}' | sshfs"
 		TARGET_PARM="${TARGET_PARM} -o password_stdin"
 	}
-elif [ "${TARGET:0:1}" == '/' ]; then
+elif [ "${TARGET:0:1}" = '/' ]; then
 	echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 fi
 echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
@@ -606,8 +641,7 @@ echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 if [ "${SOURCE:0:2}" = '//' ]; then				# if we're mounting a Linux NFS share, then...
 	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	eval "mount -t nfs -o ro${SOURCE_PARM} \"${SOURCE:2}\" \"${DIR_MNTS}/${RJN}.s\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {				# https://linuxize.com/post/how-to-mount-an-nfs-share-in-linux/
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: mount -t nfs -o ro${SOURCE_PARM} \"${SOURCE:2}\" \"${DIR_MNTS}/${RJN}.s\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 1
 	}
@@ -615,16 +649,14 @@ elif [ "${SOURCE:0:2}" = '\\' ]; then
 	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	SOURCE="$(echo ${SOURCE} | tr '\\' '/')"		# NOTE: we MUST replace the '\' characters with '/' characters in the SOURCE to work correctly
 	eval "mount -t cifs -o ro,uid=$(id -n -u),gid=$(id -n -g)${SOURCE_PARM} \"${SOURCE}\" \"${DIR_MNTS}/${RJN}.s\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {				# https://linuxize.com/post/how-to-mount-cifs-windows-share-on-linux/
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: mount -t cifs -o ro,uid=$(id -n -u),gid=$(id -n -g)$(echo "${SOURCE_PARM}"|sed "s/,pass='[^']*'/,pass='********'/") \"${SOURCE}\" \"${DIR_MNTS}/${RJN}.s\"" >>"${DIR_LOGS}/${LOG_ERRS}"	# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
 		exitGraceful 1
 	}
 elif [ "${SOURCE:0:1}" = '%' ]; then
 	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	eval "${SOURCE_CALL} \"${SOURCE_FULL}\" \"${DIR_MNTS}/${RJN}.s\" -o ro${SOURCE_PARM}" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {			# NOTE: this is after the RSA keys have already been exchanged with the server	www.beginninglinux.com/home/server-administration/openssh-keys-certificates-authentication-pem-pub-crt
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: $(echo "${SOURCE_CALL}"|sed "s/'[^']*'/'********'/") \"${SOURCE_FULL}\" \"${DIR_MNTS}/${RJN}.s\" -o ro${SOURCE_PARM}" >>"${DIR_LOGS}/${LOG_ERRS}"		# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
 		exitGraceful 1
 	}
@@ -636,8 +668,7 @@ echo -n " [target]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"		# -- SEE THE NOTES FROM 
 if [ "${TARGET:0:2}" = '//' ]; then
 	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	eval "mount -t nfs -o rw${TARGET_PARM} \"${TARGET:2}\" \"${DIR_MNTS}/${RJN}.t\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: mount -t nfs -o rw${TARGET_PARM} \"${TARGET:2}\" \"${DIR_MNTS}/${RJN}.t\"" >>"${DIR_LOGS}/${LOG_ERRS}"				# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
 		exitGraceful 1
 	}
@@ -645,16 +676,14 @@ elif [ "${TARGET:0:2}" = '\\' ]; then
 	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	TARGET="$(echo ${TARGET} | tr '\\' '/')"
 	eval "mount -t cifs -o rw,uid=$(id -n -u),gid=$(id -n -g)${TARGET_PARM} \"${TARGET}\" \"${DIR_MNTS}/${RJN}.t\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: mount -t cifs -o rw,uid=$(id -n -u),gid=$(id -n -g)$(echo "${TARGET_PARM}"|sed "s/,pass='[^']*'/,pass='********'/") \"${TARGET}\" \"${DIR_MNTS}/${RJN}.t\"" >>"${DIR_LOGS}/${LOG_ERRS}"	# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
 		exitGraceful 1
 	}
 elif [ "${TARGET:0:1}" = '%' ]; then
 	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	eval "${TARGET_CALL} \"${TARGET_FULL}\" \"${DIR_MNTS}/${RJN}.t\" -o rw${TARGET_PARM}" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: $(echo "${TARGET_CALL}"|sed "s/'[^']*'/'********'/") \"${TARGET_FULL}\" \"${DIR_MNTS}/${RJN}.t\" -o rw${TARGET_PARM}" >>"${DIR_LOGS}/${LOG_ERRS}"								# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
 		exitGraceful 1
 	}
@@ -672,8 +701,7 @@ if [ "$TYPE" = 'sync' ]; then
 	# https://unix.stackexchange.com/questions/260616/reuse-rsync-dry-run-output-to-speed-up-the-actual-transfer-later-on
 	echo -n "Obtaining files list to sync:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	( eval "rsync -av --dry-run ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
-		echo " [failure]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "ERROR: The 'rsync' binary failed in its execution." | tee -a "${DIR_LOGS}/${LOG_ERRS}" -a "${DIR_LOGS}/${LOG_ERRS}"
+		echo -e " [failure]\nERROR: The 'rsync' binary failed in its execution." | tee -a "${DIR_LOGS}/${LOG_ERRS}" -a "${DIR_LOGS}/${LOG_ERRS}"
 		echo "Calling: rsync -av --dry-run ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 	} ) | awk '!/^sending incremental file list$/' | awk '/^$/{exit}1' >"${DIR_TEMP}/${RJN}.list"
 	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
@@ -684,7 +712,10 @@ if [ "$TYPE" = 'sync' ]; then
 		exitGraceful 0
 	else
 		echo "Sync'ing the data..." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-#		( eval "rsync -avuW --inplace --log-file=\"${DIR_LOGS}/${LOG_ERRS}\" --out-format=\"%n\" --include-from=\"${DIR_TEMP}/${RJN}.list\" ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" || { echo "ERROR: The 'rsync' binary failed in its execution." | tee -a "${DIR_LOGS}/${LOG_ERRS}" -a "${DIR_LOGS}/${LOG_ERRS}" 1>&2; } ) | pv -w 80 -l -s "$TEMP" >/dev/null
+		( eval "rsync -v --log-file=\"${DIR_LOGS}/${LOG_ERRS}\" --out-format=\"%n\" --include-from=\"${DIR_TEMP}/${RJN}.list\" ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+			echo "ERROR: The 'rsync' binary failed in its execution." | tee -a "${DIR_LOGS}/${LOG_ERRS}" -a "${DIR_LOGS}/${LOG_ERRS}" 1>&2;
+			echo "Calling: rsync -v --log-file=\"${DIR_LOGS}/${LOG_ERRS}\" --out-format=\"%n\" --include-from=\"${DIR_TEMP}/${RJN}.list\" ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+		} ) | pv -w 80 -l -s "$TEMP" >/dev/null
 	fi
 
 else
@@ -703,7 +734,7 @@ else
 	echo -n "Checking the job storage directory:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 	if [ ! -e "${DIR_MNTS}/${RJN}.t/${NAME}" ]; then
 		echo -n ' [creating]' | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		mkdir "${DIR_MNTS}/${RJN}.t/${NAME}" >/dev/null 2>&1 || { echo "ERROR: The job --target job directory can NOT be created."; exitGraceful 1; }
+		mkdir "${DIR_MNTS}/${RJN}.t/${NAME}" >/dev/null 2>&1 || { echo -e " [failure]\nERROR: The job --target job directory can NOT be created." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exitGraceful 1; }
 	fi
 	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
@@ -758,18 +789,24 @@ else
 	[ "$SIZE" ] && SIZE=$(sizeConvert "${SIZE}B" 'M')	# convert the size into MB
 
 	# Validate the SIZE obtained above
-	if [ "$SIZE" == '0' ] || [ "$SIZE" == '' ]; then	# NOTE: the SIZE=='' would occur is no files were returned from 'find' (e.g. no new data was available yet)
-		echo "There does NOT appear to be any data that needs to be backed up." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+	if [ "$SIZE" = '0' ] || [ "$SIZE" = '' ]; then		# NOTE: the SIZE=='' would occur is no files were returned from 'find' (e.g. no new data was available yet)
+		echo -e " [done]\nThere does NOT appear to be any data that needs to be backed up." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 0
 	fi
-	if ( ! echo ${SIZE} | grep -q ^'[0-9]*'$ ); then
-		echo "ERROR: The size of the backup failed to be obtained." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+	if ( ! echo "${SIZE}" | grep -q ^'[0-9]*'$ ); then
+		echo -e " [failure]\nERROR: The size of the backup failed to be obtained." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 1
 	fi
+	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+
+
+	# precycle the backups
+	[ "$PRECYCLE" ] && [ cycleArchives -gt 0 ] && exitGraceful 1
+
 
 	echo "Backing up the data..." >>"${DIR_LOGS}/${LOG_ERRS}"
-	[ ! -e "${DIR_LOGS}/${LOG_ERRS}" ] && touch "${DIR_LOGS}/${LOG_ERRS}"		# if the log file has not yet been created, create it now so there aren't any errors below
-	TEMP=$(stat -c '%s' "${DIR_LOGS}/${LOG_ERRS}")					# NOTE: we store the size of the error file before tar is executed so we know if an error occurs with it during execution (since we can't exitGraceful() upon tar failure, but only the last chained pipe command)
+	[ ! -e "${DIR_LOGS}/${LOG_ERRS}" ] && touch "${DIR_LOGS}/${LOG_ERRS}"			# if the log file has not yet been created, create it now so there aren't any errors below
+	TEMP=$(stat -c '%s' "${DIR_LOGS}/${LOG_ERRS}")						# NOTE: we store the size of the error file before tar is executed so we know if an error occurs with it during execution (since we can't exitGraceful() upon tar failure, but only the last chained pipe command)
 
 	# NOTE: the below single command creates the backup archive, the catalog file, and compresses all at once!
 	( eval "cd "${DIR_MNTS}/${RJN}.s/" && tar -cvf - --totals ${PARAMETERS}" 2>"${DIR_TEMP}/${LOG_FIFO}" || {
@@ -782,62 +819,31 @@ else
 		echo "ERROR: The 'tar' binary has completed but encountered an error." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		exitGraceful 1
 	}
+
+
+	# normally cycle the backups
+	[ ! "$PRECYCLE" ] && [ cycleArchives -gt 0 ] && exitGraceful 1
 fi
 
-# LEFT OFF - update the code below
 
 
 
+# get the sync'ed/archive byte count
+[ "$TYPE" = 'sync' ] && SIZE=$(while read FILE; do stat -c %s $FILE; done <"${DIR_TEMP}/${RJN}.list" | awk '{total += $1} END {print total}')
+[ "$TYPE" != 'sync' ] && SIZE=$(stat -c %s "${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}")
+( ! echo "${SIZE}" | grep -q ^'[0-9]*'$ ) && SIZE='unknown'	# do NOT error out at this point, but just specify 'unknown' if either of the two above lines fails
 
-
-
-
-
-
-
-# let the system settle down before continuing...
-sleep 5
-
-echo -en "\nCycling the backups: " >>"${DIR_LOGS}/${LOG_ERRS}"
-cd "${TARGET}/${NAME}"
-OFS=$IFS							# backup the current IFS
-IFS=$'\n'
-FILE=								# have to the set to NULL so that the next 'if' will work correctly
-for FILE in $(ls -rt1|grep "${EXT:0:4}..$"); do
-	if [ "$FILE" == "lost+found" ]; then continue; fi		# this is ONLY a safety precaution and should never be reached
-	if [ "$FILE" == "${RJN}${EXT}" ]; then continue; fi		# if we've iterated to the backup we just created, then continue (which should end the '$
-
-	rm ${FILE} 2>>"${DIR_LOGS}/${LOG_ERRS}" || exitGraceful 1
-	if [ -e "${FILE%.*}.cat" ]; then
-		rm "${FILE%.*}.cat" 2>>"${DIR_LOGS}/${LOG_ERRS}"
-	fi
-	if [ -e "${DIR_LOGS}/${FILE%%.*}.log" ]; then
-		rm "${DIR_LOGS}/${FILE%%.*}.log" 2>>"${DIR_LOGS}/${LOG_ERRS}"
-	fi
-	break							# we want to break if we reach this point
-
-# LEFT OFF - there is a problem here if there are no files that got backed up (e.g. Christmas day), and the .tgz file gets deleted (it needs to remain and just be 0 bytes to not mess up the archive count)
-done
-
-echo "[done]" >>"${DIR_LOGS}/${LOG_ERRS}"
-echo -n "Creating the backup archives' catalog file: " >>"${DIR_LOGS}/${LOG_ERRS}"
-tar -tf "${RJN}${EXT}" | grep -v '/$' > "${RJN}${EXT%.*}.cat" || exitGraceful 1
-
-SIZE=$(stat -c %s ${RJN}${EXT})					# store the initial size of the file
-if (( $COMPRESSION )); then
-	echo "[done]" >>"${DIR_LOGS}/${LOG_ERRS}"
-	echo -n "Compressing the archive: " >>"${DIR_LOGS}/${LOG_ERRS}"
-	gzip -9 ${RJN}${EXT} && mv ${RJN}${EXT}.gz ${RJN}${EXT:0:4}gz
-	SIZE=$(stat -c %s ${RJN}${EXT:0:4}gz)			# update the file size if it was compressed
-fi
-
-# Send the backup report
-curl "http://ip.digital-pipe.com/code/backups.php?client=CAI&type=${TYPE}&archive=${RJN}&size=${SIZE}" >>"${DIR_LOGS}/${LOG_ERRS}"
+# send the backup report
+# LEFT OFF - move this into the .conf file
+curl '...' >>"${DIR_LOGS}/${LOG_ERRS}"
 echo '' >>"${DIR_LOGS}/${LOG_ERRS}"
-
 echo "[done]" >>"${DIR_LOGS}/${LOG_ERRS}"
-echo -n "The backup job has completed successfully: " >>"${DIR_LOGS}/${LOG_ERRS}"
-date >>"${DIR_LOGS}/${LOG_ERRS}"
+
+
+
+
+echo -e "\n\n           $(date +'%Y-%m-%d  %H:%M:%S')" >>"${DIR_LOGS}/${LOG_ERRS}"
+echo -e "----------- [ Backup Success ] -----------" >>"${DIR_LOGS}/${LOG_ERRS}"
 
 exitGraceful 0
 

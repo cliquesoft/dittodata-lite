@@ -370,7 +370,7 @@ for i in "$@"; do						# process each of the passed parameters (after setting de
 		echo
 		echo " --name		the name of the backup job (enclose in quotes)"
 		echo " --type		what type of backup job to start:"
-# VER2 - archive (old data via date)|clone (ntfsclone)|bit (dd)|BMR (bare metal restore - fat32|ntfs|ext support only - gets data and mbr)"
+# VER2 - archive (old data via date)|clone (ntfsclone/rsync/dd)|BMR (bare metal restore - fat32|ntfs|ext support only - gets data [via 'clone'] and mbr)"
 #	NOTE: the restore module will mount BMR 'images' to restore from (ntfs, fat32, ext, and dd)
 # for achive date: https://stackoverflow.com/questions/67409358/why-does-find-command-in-if-return-paths-must-precede-expression-error
 #	NOTE: make sure to document that 'sinc' will store archives locally with the DIRTAG value becoming the local storage location (in it's entirety)
