@@ -1,7 +1,7 @@
 #!/bin/sh
 # backup	This script is a lite version of our dittodata backup solution
 # Created	2011-12-07 by Dave Henderson (dhenderson@cliquesoft.org)
-# Updated	2026-08-27 by Dave Henderson (dhenderson@cliquesoft.org)
+# Updated	2026-09-01 by Dave Henderson (dhenderson@cliquesoft.org)
 #
 # Unless a valid Cliquesoft Private License (CPLv1) has been purchased for your
 # device, this software is licensed under the Cliquesoft Public License (CPLv2)
@@ -60,6 +60,7 @@
 
 RJN=$(echo "$RANDOM + 2 + $RANDOM" | bc)			# random job number to prevent archive naming conflicts
 DIR_CONF='/etc'
+DIR_LIBS='/lib'
 DIR_LOGS='/var/logs/dittodata'
 DIR_MNTS='/mnt'
 DIR_TEMP='/tmp/dittodata'
@@ -73,28 +74,34 @@ LOG_FIFO="${RJN}.fifo"						# the fifo used to create the archive catalog file w
 # [system]
 DATETIME="$(date +'%Y-%m-%d %H:%M:%S')"				# sets a default epoch so in the event of failure, a full backup should be performed via this date for safety
 EXT=								# the archive extension
-FILE=
+FILE=								# a variable used in loops
 FIND=								# the find command to feed the files into tar
-LINE=
+LINE=								# a variable used in loops
+TEMP=								# a variable used to hold temporary values
+
+# [config]
+ALERTS=								# the binary or URL to use when reporting backup success|failure
 SIZE=								# the archive size
-TEMP=
+SID=								# the security identifier to authenticate your account with ALERTS
 
 # [job]
 NAME='device'							# the job name
 TYPE='full'							# which type of job to run: daily, full, incremental, sync
 LIMIT='10'							# the number of backup archives to maintain
+ALERT=								# what type of alerts to send upon success|failure
 COMPRESSION=							# whether or not compression is used on the archive
 PARAMETERS=							# binary parameters to pass to tar or rsync
+PRECYCLE=							# whether the backup archive rotation needs to occur before or after a backup (default = after)
 INCLUDE=							# the directories and files to include in the archive
 EXCLUDE=							# the directories and files to exclude from the archive
-SOURCE=
-SOURCE_USER=
+SOURCE=								# the source device or network share
+SOURCE_USER=							# the account parameters to mount a network share
 SOURCE_PASS=
 SOURCE_DOMN=
-SOURCE_PARM=
-SOURCE_HOST=
-SOURCE_FULL=
-SOURCE_CALL=
+SOURCE_PARM=							# any parameters to pass to the 'mount' command for the SOURCE
+SOURCE_HOST=							# the SOURCE host if using sshfs
+SOURCE_FULL=							# the full SOURCE sshfs mount command
+SOURCE_CALL=		# LEFT OFF - remove soon		# the syntax to enter the share password to sshfs
 TARGET=
 TARGET_USER=
 TARGET_PASS=
@@ -103,7 +110,7 @@ TARGET_PARM=
 TARGET_HOST=
 TARGET_FULL=
 TARGET_CALL=
-TAG1=
+TAG1=								# tags to pass to ALERTS
 TAG2=
 TAG3=
 TAG4=
@@ -112,6 +119,17 @@ TAG4=
 
 
 # -------------------------------------------------------------------------
+
+
+
+
+# IMPORT FUNCTIONS FROM FILE
+
+[ -e "${DIR_LIBS}/filesystem.sh" ] && . "${DIR_LIBS}/filesystem.sh"								# ALL - system
+[ -e "/usr/local/${DIR_LIBS}/filesystem.sh" ] && . "/usr/local/${DIR_LIBS}/filesystem.sh"					# LSB - public
+[ -e "${HOME}/.${DIR_LIBS##*/}/filesystem.sh" ] && . "${HOME}/.${DIR_LIBS##*/}/filesystem.sh"					# LSB - user
+[ -e "/Users/Public/.${DIR_LIBS:1}/filesystem.sh" ] && . "/Users/Public/.${DIR_LIBS:1}/filesystem.sh"				# XSB - public
+[ -e "${HOME}/.${DIR_LIBS:1}/filesystem.sh" ] && . "${HOME}/.${DIR_LIBS:1}/filesystem.sh"					# XSB - user
 
 
 
@@ -167,31 +185,31 @@ exitGraceful() {
 #		  https://hexus.net/tech/tech-explained/storage/1376-gigabytes-gibibytes-what-need-know/
 #		  https://unix.stackexchange.com/questions/346902/need-to-convert-bytes-to-gb-mb-kb-in-normal-decimal-format
 sizeConvert() {
-	local sSIZE=$1
-	local sUNIT=$2
-	local iPRE=''						# number portion of string
-	local sSUF=''						# unit portion of string
+	local SIZE=$1
+	local UNIT=$2
+	local PRE=''						# number portion of string (prefix)
+	local SUF=''						# unit portion of string (suffix)
 
-	# validate sSIZE suffix
-	iPRE=$(echo ${sSIZE}|sed 's/[a-zA-Z]*//g')		# number
-	sSUF=$(echo ${sSIZE}|sed 's/[0-9]*//g')			# unit
-	case $sSUF in
-		'B') sSIZE=$iPRE ;;				# if we are dealing in bytes, we have to remove the 'B' suffix or numfmt will error
+	# validate SIZE suffix
+	PRE=$(echo ${SIZE}|sed 's/[a-zA-Z]*//g')		# number
+	SUF=$(echo ${SIZE}|sed 's/[0-9]*//g')			# unit
+	case $SUF in
+		'B') SIZE=$PRE ;;				# if we are dealing in bytes, we have to remove the 'B' suffix or numfmt will error
 		'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
-		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sSIZE], exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [SIZE]." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		   exitGraceful 1				# NOTE: this also picks up no value for sSUF
 			;;
 	esac
 
-	# validate sUNIT
-	case $sUNIT in
+	# validate UNIT
+	case $UNIT in
 		'B'|'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
-		*) echo "ERROR: The sizeConvert() function was passed an invalid value [sUNIT], exiting." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+		*) echo "ERROR: The sizeConvert() function was passed an invalid value [UNIT]." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		   exitGraceful 1
 			;;
 	esac
 
-	numfmt --round=towards-zero --from=auto --to-unit=1${sUNIT} --grouping ${sSIZE}		# 'towards-zero' is basically truncation instead of rounding	https://askubuntu.com/questions/1169138/cutting-numbers-into-a-specific-decimals
+	numfmt --round=towards-zero --from=auto --to-unit=1${UNIT} --grouping ${SIZE}		# 'towards-zero' is basically truncation instead of rounding	https://askubuntu.com/questions/1169138/cutting-numbers-into-a-specific-decimals
 	return 0
 }
 
@@ -200,9 +218,9 @@ sizeConvert() {
 # Overview:	cycles the backup archives
 cycleArchives() {
 	echo -n "Cycling the backups:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	cd "${DIRMNTS}/${RJN}.t/${NAME}" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+	cd "${DIR_MNTS}/${RJN}.t/${NAME}" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
 		echo -e " [failure]\nERROR: The job --target directory is not accessible." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: cd \"${DIRMNTS}/${RJN}.t/${NAME}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+		echo "Calling: cd \"${DIR_MNTS}/${RJN}.t/${NAME}\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 		return 1
 	}
 	# NOTE: we check the EXT as we do below in case the compression changes at some point
@@ -239,10 +257,10 @@ cycleArchives() {
 		TEMP=$(echo "$TEMP" | sed "/${FILE}/d")
 
 		# delete the associated logs (locally)
-		if [ -e "${DIRLOGS}/${FILE%%.*}.log" ]; then
-			rm "${DIRLOGS}/${FILE%%.*}.log" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
+		if [ -e "${DIR_LOGS}/${FILE%%.*}.log" ]; then
+			rm "${DIR_LOGS}/${FILE%%.*}.log" 2>>"${DIR_LOGS}/${LOG_ERRS}" || {
 				echo -e " [failure]\nERROR: The cycled job archive log (${FILE%%.*}.log) can NOT be deleted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-				echo "Calling: rm \"${DIRLOGS}/${FILE%%.*}.log\"" >>"${DIR_LOGS}/${LOG_ERRS}"
+				echo "Calling: rm \"${DIR_LOGS}/${FILE%%.*}.log\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 				return 1
 			}
 		fi
@@ -344,7 +362,7 @@ fi
 [ -e "${DIR_CONF}/config" ] && . "${DIR_CONF}/config"										# ALL - system
 [ -e "/usr/local/${DIR_CONF}/config" ] && . "/usr/local/${DIR_CONF}/config"							# LSB - public
 [ -e "${HOME}/.${DIR_CONF##*/}/config" ] && . "${HOME}/.${DIR_CONF##*/}/config"							# LSB - user
-[ -e "/Users/Public/.${DIR_CONF:1}/de.account" ] && . "/Users/Public/.${DIR_CONF:1}/de.account"					# XSB - public
+[ -e "/Users/Public/.${DIR_CONF:1}/config" ] && . "/Users/Public/.${DIR_CONF:1}/config"						# XSB - public
 [ -e "${HOME}/.${DIR_CONF:1}/config" ] && . "${HOME}/.${DIR_CONF:1}/config"							# XSB - user
 
 # process parameters (overwriting any config values)
@@ -535,83 +553,8 @@ else
 fi
 
 echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-if [ "${SOURCE:0:2}" = '//' ]; then				# if we're mounting a Linux NFS share, then...			https://linuxize.com/post/how-to-mount-an-nfs-share-in-linux/
-	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	[ "${SOURCE_PARM}" ] && {
-		[ "${SOURCE_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-		SOURCE_PARM="${TEMP}${SOURCE_PARM}"		# if we've made it here and this variable has a value, prepend a ',' so the mount syntax below works correctly
-	}
-# VER2 - secure nfs via ssh; read https://stackoverflow.com/questions/53604706/mount-network-share-with-nfs-with-username-password
-	# NOTE - we don't process credentials as they are not part of NFS mounting (the client device institutes the security of the network share)		https://stackoverflow.com/questions/53604706/mount-network-share-with-nfs-with-username-password
-elif [ "${SOURCE:0:2}" = '\\' ]; then				# if we're mounting a Windows CIFS share, then...
-	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	TEMP=''
-	[ "${SOURCE_USER}" ] && TEMP="${TEMP},user=${SOURCE_USER}"
-	[ "${SOURCE_PASS}" ] && TEMP="${TEMP},pass='${SOURCE_PASS}'"
-	[ "${SOURCE_DOMN}" ] && TEMP="${TEMP},dom=${SOURCE_DOMN}"
-	if [ "${SOURCE_PARM}" ]; then
-		[ "${SOURCE_PARM:0:1}" = '-' ] && TEMP="${TEMP} ${SOURCE_PARM}" || TEMP="${TEMP},${SOURCE_PARM}"
-	fi
-	SOURCE_PARM="$TEMP"
-elif [ "${SOURCE:0:1}" = '%' ]; then				# if we're mounting an sshfs share, then...
-	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${SOURCE_PARM}" ] && SOURCE_PARM=",${SOURCE_PARM}"		# since we are adding a 'ro' prefix, we need to prepend a comma so the syntax is correct
 
-	SOURCE_HOST=$(echo "$SOURCE" | sed 's/^%//;s/:.*//')	# NOTE: $SOURCE is something like '%192.168.1.10:/home' and will be turned into '192.168.1.10' here, isolating just the host name
-	[ "${SOURCE_USER}" ] && SOURCE_FULL="${SOURCE_USER}@${SOURCE:1}" || SOURCE_FULL="${USER}@${SOURCE:1}"			# add the correct username to the remote device (replacing the preceeding '%' with '@')
-
-	# WARNING: the below lines MUST come in the order they currently are
-	[ "${SOURCE_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-	[ -e "${HOME}/.ssh/${SOURCE_HOST}" ] && SOURCE_PARM="IdentityFile=\"${HOME}/.ssh/${SOURCE_HOST}\"${TEMP}${SOURCE_PARM}"
-	[ ! "${SOURCE_PARM}" ] && TEMP=''							# if the value is blank, then blank out TEMP so the below syntax is correct
-	( [ "${SOURCE_USER}" ] && [ "${USER}" != "${SOURCE_USER}" ] ) && SOURCE_PARM="allow_other,uid=$(id -u ${SOURCE_USER}),gid=$(id -g)${TEMP}${SOURCE_PARM}" || SOURCE_PARM="allow_other,uid=$(id -u),gid=$(id -g)${TEMP}${SOURCE_PARM}"
-	[ "${SOURCE_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-	[ "${SOURCE_PARM}" ] && [ "${SOURCE_PARM:0:1}" != ',' ] && SOURCE_PARM="${TEMP}${SOURCE_PARM}"
-	[ "${SOURCE_PASS}" ] && {								# since this is post-pended, always make it the LAST parameter called (with it's own '-o')
-		SOURCE_CALL="echo '${SOURCE_PASS}' | sshfs"
-		SOURCE_PARM="${SOURCE_PARM} -o password_stdin"					# https://unix.stackexchange.com/questions/337465/username-and-password-in-command-line-with-sshfs
-	}
-elif [ "${SOURCE:0:1}" = '/' ]; then				# if we're dealing with a local directory, then...
-	echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-fi
-
-echo -n " [target]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"		# -- SEE THE NOTES FROM THE *SOURCE* ABOVE --
-if [ "${TARGET:0:2}" = '//' ]; then
-	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	[ "${TARGET_PARM}" != '' ] && {
-		[ "${TARGET_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-		TARGET_PARM="${TEMP}${TARGET_PARM}"
-	}
-# VER2 - secure nfs via ssh; read https://stackoverflow.com/questions/53604706/mount-network-share-with-nfs-with-username-password
-elif [ "${TARGET:0:2}" = '\\' ]; then
-	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	TEMP=''
-	[ "${TARGET_USER}" ] && TEMP="${TEMP},user=${TARGET_USER}"
-	[ "${TARGET_PASS}" ] && TEMP="${TEMP},pass='${TARGET_PASS}'"
-	[ "${TARGET_DOMN}" ] && TEMP="${TEMP},dom=${TARGET_DOMN}"
-	if [ "${TARGET_PARM}" ]; then
-		[ "${TARGET_PARM:0:1}" = '-' ] && TEMP="${TEMP} ${TARGET_PARM}" || TEMP="${TEMP},${TARGET_PARM}"
-	fi
-	TARGET_PARM="$TEMP"
-elif [ "${TARGET:0:1}" = '%' ]; then
-	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-
-	THOST=$(echo "$TARGET" | sed 's/^%//;s/:.*//')
-	[ "${TARGET_USER}" ] && TARGET_FULL="${TARGET_USER}@${TARGET:1}" || TARGET_FULL="${USER}@${TARGET:1}"
-
-	# WARNING: the below lines MUST come in the order they currently are
-	[ "${TARGET_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-	[ -e "${HOME}/.ssh/${THOST}" ] && TARGET_PARM="IdentityFile=\"${HOME}/.ssh/${THOST}\"${TEMP}${TARGET_PARM}"
-	[ ! "${TARGET_PARM}" ] && TEMP=''
-	( [ "${TARGET_USER}" ] && [ "${USER}" != "${TARGET_USER}" ] ) && TARGET_PARM="allow_other,uid=$(id -u ${TARGET_USER}),gid=$(id -g)${TEMP}${TARGET_PARM}" || TARGET_PARM="allow_other,uid=$(id -u),gid=$(id -g)${TEMP}${TARGET_PARM}"
-	[ "${TARGET_PARM:0:1}" = '-' ] && TEMP=' ' || TEMP=','
-	[ "${TARGET_PARM}" ] && [ "${TARGET_PARM:0:1}" != ',' ] && TARGET_PARM="${TEMP}${TARGET_PARM}"
-	[ "${TARGET_PASS}" ] && {
-		TARGET_CALL="echo '${TARGET_PASS}' | sshfs"
-		TARGET_PARM="${TARGET_PARM} -o password_stdin"
-	}
-elif [ "${TARGET:0:1}" = '/' ]; then
-	echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-fi
 echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 
@@ -638,58 +581,18 @@ trap "exitGraceful 1" SIGINT
 # process the locations
 echo -n "Processing the locations:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-if [ "${SOURCE:0:2}" = '//' ]; then				# if we're mounting a Linux NFS share, then...
-	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	eval "mount -t nfs -o ro${SOURCE_PARM} \"${SOURCE:2}\" \"${DIR_MNTS}/${RJN}.s\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {				# https://linuxize.com/post/how-to-mount-an-nfs-share-in-linux/
-		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: mount -t nfs -o ro${SOURCE_PARM} \"${SOURCE:2}\" \"${DIR_MNTS}/${RJN}.s\"" >>"${DIR_LOGS}/${LOG_ERRS}"
-		exitGraceful 1
-	}
-elif [ "${SOURCE:0:2}" = '\\' ]; then
-	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	SOURCE="$(echo ${SOURCE} | tr '\\' '/')"		# NOTE: we MUST replace the '\' characters with '/' characters in the SOURCE to work correctly
-	eval "mount -t cifs -o ro,uid=$(id -n -u),gid=$(id -n -g)${SOURCE_PARM} \"${SOURCE}\" \"${DIR_MNTS}/${RJN}.s\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {				# https://linuxize.com/post/how-to-mount-cifs-windows-share-on-linux/
-		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: mount -t cifs -o ro,uid=$(id -n -u),gid=$(id -n -g)$(echo "${SOURCE_PARM}"|sed "s/,pass='[^']*'/,pass='********'/") \"${SOURCE}\" \"${DIR_MNTS}/${RJN}.s\"" >>"${DIR_LOGS}/${LOG_ERRS}"	# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
-		exitGraceful 1
-	}
-elif [ "${SOURCE:0:1}" = '%' ]; then
-	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	eval "${SOURCE_CALL} \"${SOURCE_FULL}\" \"${DIR_MNTS}/${RJN}.s\" -o ro${SOURCE_PARM}" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {			# NOTE: this is after the RSA keys have already been exchanged with the server	www.beginninglinux.com/home/server-administration/openssh-keys-certificates-authentication-pem-pub-crt
-		echo -e " [failure]\nERROR: The job --source can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: $(echo "${SOURCE_CALL}"|sed "s/'[^']*'/'********'/") \"${SOURCE_FULL}\" \"${DIR_MNTS}/${RJN}.s\" -o ro${SOURCE_PARM}" >>"${DIR_LOGS}/${LOG_ERRS}"		# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
-		exitGraceful 1
-	}
-elif [ "${SOURCE:0:1}" = '/' ]; then
-	echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-fi
+[ "${SOURCE:0:2}" = '//' ] && echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${SOURCE:0:2}" = '\\' ] && echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${SOURCE:0:1}" = '%' ] && echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${SOURCE:0:1}" = '/' ] && echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+Filesystem_Mount "$SOURCE" "${DIR_MNTS}/${RJN}.s" "${DIR_LOGS}/${LOG_ERRS}" "ro$SOURCE_PARM" "$SOURCE_USER" "$SOURCE_PASS" || { echo ' [failure]'; exitGraceful 1; }
 
 echo -n " [target]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"		# -- SEE THE NOTES FROM THE *SOURCE* ABOVE --
-if [ "${TARGET:0:2}" = '//' ]; then
-	echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	eval "mount -t nfs -o rw${TARGET_PARM} \"${TARGET:2}\" \"${DIR_MNTS}/${RJN}.t\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: mount -t nfs -o rw${TARGET_PARM} \"${TARGET:2}\" \"${DIR_MNTS}/${RJN}.t\"" >>"${DIR_LOGS}/${LOG_ERRS}"				# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
-		exitGraceful 1
-	}
-elif [ "${TARGET:0:2}" = '\\' ]; then
-	echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	TARGET="$(echo ${TARGET} | tr '\\' '/')"
-	eval "mount -t cifs -o rw,uid=$(id -n -u),gid=$(id -n -g)${TARGET_PARM} \"${TARGET}\" \"${DIR_MNTS}/${RJN}.t\"" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: mount -t cifs -o rw,uid=$(id -n -u),gid=$(id -n -g)$(echo "${TARGET_PARM}"|sed "s/,pass='[^']*'/,pass='********'/") \"${TARGET}\" \"${DIR_MNTS}/${RJN}.t\"" >>"${DIR_LOGS}/${LOG_ERRS}"	# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
-		exitGraceful 1
-	}
-elif [ "${TARGET:0:1}" = '%' ]; then
-	echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	eval "${TARGET_CALL} \"${TARGET_FULL}\" \"${DIR_MNTS}/${RJN}.t\" -o rw${TARGET_PARM}" 2>>"${DIR_LOGS}/${LOG_ERRS}" >/dev/null || {
-		echo -e " [failure]\nERROR: The job --target can NOT be mounted." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		echo "Calling: $(echo "${TARGET_CALL}"|sed "s/'[^']*'/'********'/") \"${TARGET_FULL}\" \"${DIR_MNTS}/${RJN}.t\" -o rw${TARGET_PARM}" >>"${DIR_LOGS}/${LOG_ERRS}"								# ' < this character is to stop the incorrect text coloring and can be ignored as an actual comment
-		exitGraceful 1
-	}
-elif [ "${TARGET:0:1}" = '/' ]; then
-	echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-fi
+[ "${TARGET:0:2}" = '//' ] && echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${TARGET:0:2}" = '\\' ] && echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${TARGET:0:1}" = '%' ] && echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+[ "${TARGET:0:1}" = '/' ] && echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
+Filesystem_Mount "$TARGET" "${DIR_MNTS}/${RJN}.t" "${DIR_LOGS}/${LOG_ERRS}" "$TARGET_PARM" "$TARGET_USER" "$TARGET_PASS" || { echo ' [failure]'; exitGraceful 1; }
 echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 
@@ -829,15 +732,21 @@ fi
 
 
 # get the sync'ed/archive byte count
-[ "$TYPE" = 'sync' ] && SIZE=$(while read FILE; do stat -c %s $FILE; done <"${DIR_TEMP}/${RJN}.list" | awk '{total += $1} END {print total}')
-[ "$TYPE" != 'sync' ] && SIZE=$(stat -c %s "${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}")
-( ! echo "${SIZE}" | grep -q ^'[0-9]*'$ ) && SIZE='unknown'	# do NOT error out at this point, but just specify 'unknown' if either of the two above lines fails
+if [ "$ALERTS" != 'none' ]; then
+	# first obtain the size of the backup archive
+	[ "$TYPE" = 'sync' ] && SIZE=$(while read FILE; do stat -c %s $FILE; done <"${DIR_TEMP}/${RJN}.list" | awk '{total += $1} END {print total}')
+	[ "$TYPE" != 'sync' ] && SIZE=$(stat -c %s "${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}")
+	( ! echo "${SIZE}" | grep -q ^'[0-9]*'$ ) && SIZE='unknown'	# do NOT error out at this point, but just specify 'unknown' if either of the two above lines fails
 
-# send the backup report
-# LEFT OFF - move this into the .conf file
-curl '...' >>"${DIR_LOGS}/${LOG_ERRS}"
-echo '' >>"${DIR_LOGS}/${LOG_ERRS}"
-echo "[done]" >>"${DIR_LOGS}/${LOG_ERRS}"
+# DEV NOTE: you will need to pass ALERTS to the call below so it can take appropriate action based on success|failure
+	# then send the backup report
+	if ( ! echo "$ALERT" | grep -q ^'http' ); then			# if we have a command to execute, then...
+		eval $ALERT >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
+	else								# otherwise it is a URL to call, so...
+# LEFT OFF - finish this
+		curl '...' >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
+	fi
+fi
 
 
 

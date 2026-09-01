@@ -23,3 +23,11 @@
 - Updated the error output to reduce the amount calls
 - Added the backup cycling
 
+2026/09/01
+- Added all the used variables at the top of the script (with descriptions)
+- Added DIR_LIBS
+- Fixed a bug with loading the config for 'XSB > public'
+- Moved all the mounting code into filesystems.sh library
+- Updated all the mounting code to calls to Filesystem_Mount()
+- Started to implement the ALERT(S) variables
+
