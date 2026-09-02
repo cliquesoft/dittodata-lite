@@ -31,3 +31,8 @@
 - Updated all the mounting code to calls to Filesystem_Mount()
 - Started to implement the ALERT(S) variables
 
+2026/09/02
+- Added checks for an authentication file for CIFS and sshfs shares
+- Added '--delete' to the rsync command
+- Added DIR_KEYS to store the sshfs identity file location
+
