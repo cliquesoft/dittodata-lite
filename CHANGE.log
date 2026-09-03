@@ -35,4 +35,15 @@
 - Added checks for an authentication file for CIFS and sshfs shares
 - Added '--delete' to the rsync command
 - Added DIR_KEYS to store the sshfs identity file location
+- Restored the sshfs password entry code
+
+2026/09/03
+- Updated Filesystem_Mount() to use passed credentials/identity|password file
+- Renamed ALERTS to ALERT_CALL
+- Added ALERT_TYPE
+- Added job configs
+- Updated --help output
+- Updated default DIR_CONF value
+- Updated the config file processing
+- Continued implementing the ALERT* variable code
 

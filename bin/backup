@@ -1,7 +1,7 @@
 #!/bin/sh
 # backup	This script is a lite version of our dittodata backup solution
 # Created	2011-12-07 by Dave Henderson (dhenderson@cliquesoft.org)
-# Updated	2026-09-02 by Dave Henderson (dhenderson@cliquesoft.org)
+# Updated	2026-09-03 by Dave Henderson (dhenderson@cliquesoft.org)
 #
 # Unless a valid Cliquesoft Private License (CPLv1) has been purchased for your
 # device, this software is licensed under the Cliquesoft Public License (CPLv2)
@@ -59,7 +59,7 @@
 # DEFAULT VARIABLE DEFINITIONS
 
 RJN=$(echo "$RANDOM + 2 + $RANDOM" | bc)			# random job number to prevent archive naming conflicts
-DIR_CONF='/etc'
+DIR_CONF='/etc/dittodata'
 DIR_KEYS="${USER}/.ssh"
 DIR_LIBS='/lib'
 DIR_LOGS='/var/logs/dittodata'
@@ -81,9 +81,10 @@ LINE=								# a variable used in loops
 TEMP=								# a variable used to hold temporary values
 
 # [config]
-ALERTS=								# the binary or URL to use when reporting backup success|failure
+ALERT_CALL=							# the binary or URL to use when reporting backup success|failure
+ALERT_TYPE=							# the type of alert to send: binary, get, post
 SIZE=								# the archive size
-SID=								# the security identifier to authenticate your account with ALERTS
+SID=								# the security identifier to authenticate your account with ALERT_CALL
 
 # [job]
 NAME='device'							# the job name
@@ -111,7 +112,7 @@ TARGET_PARM=
 TARGET_HOST=
 TARGET_FULL=
 TARGET_CALL=
-TAG1=								# tags to pass to ALERTS
+TAG1=								# tags to pass to ALERT_CALL
 TAG2=
 TAG3=
 TAG4=
@@ -197,7 +198,7 @@ sizeConvert() {
 		'B') SIZE=$PRE ;;				# if we are dealing in bytes, we have to remove the 'B' suffix or numfmt will error
 		'K'|'Ki'|'M'|'Mi'|'G'|'Gi'|'T'|'Ti'|'P'|'Pi'|'E'|'Ei') ;;
 		*) echo "ERROR: The sizeConvert() function was passed an invalid value [SIZE]." | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-		   exitGraceful 1				# NOTE: this also picks up no value for sSUF
+		   exitGraceful 1				# NOTE: this also picks up no value for SUF
 			;;
 	esac
 
@@ -302,8 +303,9 @@ if [ ! "$1" ] || [ "$1" = '--help' ]; then
 	echo
 	echo "    {JOB}"
 	echo
-	echo "  --alert    the file/URL to call to send the alert; variables can be passed"
-	echo "  --alerts   if an email alert should be sent upon the following action:"
+# REMOVED 2026/09/03 - this is a config-only parameter
+#	echo "  --alerts    the file/URL to call to send the alert; variables can be passed"
+	echo "  --alert   if an email alert should be sent upon the following action:"
 	echo "		none|success|failure|all"
 	echo "  --compression the compression to apply to the backup:"
 	echo "		none|gzip|bzip"
@@ -358,22 +360,42 @@ elif [ "$1" = '--version' ] || [ "$1" = '-v' ]; then
 fi
 
 
-# load config first
-[ -e "${DIR_CONF}/config" ] && . "${DIR_CONF}/config"										# ALL - system
+# obtain config file naming values
+for i in "$@"; do						# process each of the passed parameters (after setting default values above)
+	if ( echo "${i}" | grep -q ^'--config=' ); then
+		TEMP="${i#*=}"
+	elif ( echo "${i}" | grep -q ^'--name=' ); then
+		NAME="${i#*=}"
+	fi
+done
+
+# load project config
+[ -e "${DIR_CONF}/config" ] && . "${DIR_CONF}/config"										# ALL - system				DEV NOTE: mention how the various config files are processed
 [ -e "/usr/local/${DIR_CONF}/config" ] && . "/usr/local/${DIR_CONF}/config"							# LSB - public
 [ -e "${HOME}/.${DIR_CONF##*/}/config" ] && . "${HOME}/.${DIR_CONF##*/}/config"							# LSB - user
 [ -e "/Users/Public/.${DIR_CONF:1}/config" ] && . "/Users/Public/.${DIR_CONF:1}/config"						# XSB - public
 [ -e "${HOME}/.${DIR_CONF:1}/config" ] && . "${HOME}/.${DIR_CONF:1}/config"							# XSB - user
 
+# load job config
+[ -e "${DIR_CONF}/${NAME}" ] && . "${DIR_CONF}/${NAME}"										# ALL - system
+[ -e "/usr/local/${DIR_CONF}/${NAME}" ] && . "/usr/local/${DIR_CONF}/${NAME}"							# LSB - public
+[ -e "${HOME}/.${DIR_CONF##*/}/${NAME}" ] && . "${HOME}/.${DIR_CONF##*/}/${NAME}"						# LSB - user
+[ -e "/Users/Public/.${DIR_CONF:1}/${NAME}" ] && . "/Users/Public/.${DIR_CONF:1}/${NAME}"					# XSB - public
+[ -e "${HOME}/.${DIR_CONF:1}/${NAME}" ] && . "${HOME}/.${DIR_CONF:1}/${NAME}"							# XSB - user
+
+# load passed config
+[ "$TEMP" ] && [ -e "$TEMP" ] && . "$TEMP"
+
 # process parameters (overwriting any config values)
 for i in "$@"; do						# process each of the passed parameters (after setting default values above)
-	if ( echo "${i}" | grep -q ^'--config' ); then
+	if ( echo "${i}" | grep -q ^'--config=' ); then
 		continue					# so that this doesn't trigger an invalid parameter prompt
 
 	elif ( echo "${i}" | grep -q ^'--alert=' ); then
 		ALERT="${i#*=}"
-	elif ( echo "${i}" | grep -q ^'--alerts=' ); then
-		ALERTS="${i#*=}"
+# REMOVED 2026/09/03 - this is a config-only parameter
+#	elif ( echo "${i}" | grep -q ^'--alerts=' ); then
+#		ALERTS="${i#*=}"
 	elif ( echo "${i}" | grep -q ^'--compression=' ); then
 		COMPRESSION="${i#*=}"
 	elif ( echo "${i}" | grep -q ^'--exclude=' ); then
@@ -550,7 +572,7 @@ else
 fi
 
 echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-[ "${SOURCE_PARM}" ] && SOURCE_PARM=",${SOURCE_PARM}"		# since we are adding a 'ro' prefix, we need to prepend a comma so the syntax is correct
+[ "${SOURCE_PARM}" ] && SOURCE_PARM="${SOURCE_PARM},ro" || SOURCE_PARM='ro'			# add a 'ro' here to make sure that nothing can happen to the SOURCE data
 
 echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
@@ -636,7 +658,7 @@ echo -n " [source]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 [ "${SOURCE:0:2}" = '\\' ] && echo -n " [cifs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 [ "${SOURCE:0:1}" = '%' ] && echo -n " [sshfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 [ "${SOURCE:0:1}" = '/' ] && echo -n " [local]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-Filesystem_Mount "$SOURCE" "${DIR_MNTS}/${RJN}.s" "${DIR_LOGS}/${LOG_ERRS}" "ro$SOURCE_PARM" "$SOURCE_USER" "$SOURCE_PASS" || { echo ' [failure]'; exitGraceful 1; }
+Filesystem_Mount "$SOURCE" "${DIR_MNTS}/${RJN}.s" "${DIR_LOGS}/${LOG_ERRS}" "$SOURCE_PARM" "$SOURCE_USER" "$SOURCE_PASS" || { echo ' [failure]'; exitGraceful 1; }
 
 echo -n " [target]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"		# -- SEE THE NOTES FROM THE *SOURCE* ABOVE --
 [ "${TARGET:0:2}" = '//' ] && echo -n " [nfs]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
@@ -659,7 +681,6 @@ if [ "$TYPE" = 'sync' ]; then
 		echo "Calling: rsync -av --dry-run ${PARAMETERS} \"${DIR_MNTS}/${RJN}.s/\" \"${DIR_MNTS}/${RJN}.t/\"" >>"${DIR_LOGS}/${LOG_ERRS}"
 	} ) | awk '!/^sending incremental file list$/' | awk '/^$/{exit}1' >"${DIR_TEMP}/${RJN}.list"
 	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-# LEFT OFF - do we need to do the 'find' code below if --include and --exclude has been passed?
 
 	TEMP=$(cat "${DIR_TEMP}/${RJN}.list" | wc -l)						# store the files-to-be-xferred count for 'pv' below
 	if [ "$TEMP" = '0' ] || [ ! "$TEMP" ]; then						# NOTE: the !TEMP would occur if no files were returned from 'rsync' (e.g. no new data was available yet)
@@ -687,7 +708,7 @@ else
 	echo " [done]" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 
 	echo -n "Checking the job storage directory:" | tee -a "${DIR_LOGS}/${LOG_ERRS}"
-	if [ ! -e "${DIR_MNTS}/${RJN}.t/${NAME}" ]; then
+	if [ ! -e "${DIR_MNTS}/${RJN}.t/${NAME}" ]; then					# NOTE: this can't be at the top in case this is on a mounted filesystem
 		echo -n ' [creating]' | tee -a "${DIR_LOGS}/${LOG_ERRS}"
 		mkdir "${DIR_MNTS}/${RJN}.t/${NAME}" >/dev/null 2>&1 || { echo -e " [failure]\nERROR: The job --target job directory can NOT be created." | tee -a "${DIR_LOGS}/${LOG_ERRS}"; exitGraceful 1; }
 	fi
@@ -726,7 +747,8 @@ else
 	#	we use OFMT to prevent scientific notation from being used	https://stackoverflow.com/questions/12714155/how-can-i-make-awk-not-use-scientific-notation-when-printing-small-values
 	#	the below MUST come in the order presented!
 	if [ "${TYPE}" = 'full' ]; then
-# LEFT OFF - can we do a 'du -hs' here instead of going through every file on the system?
+# X - LEFT OFF - can we do a 'du -hs' here instead of going through every file on the system?
+# use this as the catalog file?
 		cd "${DIR_MNTS}/${RJN}.s/" && eval find ${TEMP%|*}${TEMP#*|} -type f -printf \'%s\\t%p\\n\' 2\>\>\"${DIR_LOGS}/${LOG_ERRS}\" | eval awk \'{print \$2 \>\>\"${DIR_TEMP}/${RJN}.list\"}\; {total += \$1} END {OFMT=\"%.0f\"\; print total \>\>\"${DIR_TEMP}/${RJN}.size\"}\'
 	else
 		# NOTE: we are using SIZE here since TEMP will be filled with 'find' syntax
@@ -785,19 +807,24 @@ fi
 
 
 # get the sync'ed/archive byte count
-if [ "$ALERTS" != 'none' ]; then
+if [ "$ALERT_CALL" != 'none' ]; then
 	# first obtain the size of the backup archive
 	[ "$TYPE" = 'sync' ] && SIZE=$(while read FILE; do stat -c %s $FILE; done <"${DIR_TEMP}/${RJN}.list" | awk '{total += $1} END {print total}')
 	[ "$TYPE" != 'sync' ] && SIZE=$(stat -c %s "${DIR_MNTS}/${RJN}.t/${NAME}/${RJN}${EXT}")
 	( ! echo "${SIZE}" | grep -q ^'[0-9]*'$ ) && SIZE='unknown'	# do NOT error out at this point, but just specify 'unknown' if either of the two above lines fails
 
-# DEV NOTE: you will need to pass ALERTS to the call below so it can take appropriate action based on success|failure
+# DEV NOTE: you will need to pass ALERT_CALL to the call below so it can take appropriate action based on success|failure
 	# then send the backup report
-	if ( ! echo "$ALERT" | grep -q ^'http' ); then			# if we have a command to execute, then...
+	if [ "$ALERT_TYPE" = 'binary' ]; then				# if we have a command to execute, then...
 		eval $ALERT >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
 	else								# otherwise it is a URL to call, so...
+		if [ "$ALERT_TYPE" = 'get' ]; then			#   if the call needs to be GET, then...
+			curl "$ALERT_CALL" >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
+		else							#   otherwise it needs to be POST, so...
+			ALERT_CALL="$(echo "$ALERT_CALL" | sed -n 'h;s|.*?|-d "|;s|$|" |;p;g;s|?.*||;p' | tr '\n' '"')"		# '
 # LEFT OFF - finish this
-		curl '...' >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
+							
+		fi
 	fi
 fi
 
