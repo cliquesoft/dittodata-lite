@@ -47,3 +47,10 @@
 - Updated the config file processing
 - Continued implementing the ALERT* variable code
 
+2026/09/04
+- Updated the alert.php file to accept bother GET and POST submissions
+- Updated the images used in the email for success or failure
+- Removed unused variables from the alert config file
+- Setup the dittodata alert service
+- Updated the contents of the alert.php file
+

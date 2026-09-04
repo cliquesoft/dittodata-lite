@@ -821,7 +821,8 @@ if [ "$ALERT_CALL" != 'none' ]; then
 		if [ "$ALERT_TYPE" = 'get' ]; then			#   if the call needs to be GET, then...
 			curl "$ALERT_CALL" >>"${DIR_LOGS}/${LOG_ERRS}" 2>&1
 		else							#   otherwise it needs to be POST, so...
-			ALERT_CALL="$(echo "$ALERT_CALL" | sed -n 'h;s|.*?|-d "|;s|$|" |;p;g;s|?.*||;p' | tr '\n' '"')"		# '
+			ALERT_CALL="$(echo "$ALERT_CALL" | sed -n 'h;s|.*?|--data-urlencode "|;s|&|" --data-urlencode "|g;p;g;s|^|"|;s|?.*|"|;p' | tr '\n' ' ')"		# '
+
 # LEFT OFF - finish this
 							
 		fi
@@ -838,7 +839,6 @@ exitGraceful 0
 
 
 # TO DO
-# - move the online emailer php script to dittodata domain (erase the one for ip.digital-pipe.com)
 # - get the dittodata website online and charge for yearly emailing ($10/yr)
 # - allow people to upload their backups to our service for a fee
 
